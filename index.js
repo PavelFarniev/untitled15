@@ -1,11 +1,17 @@
 const express = require("express");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
+const cors = require("cors");
 const { nanoid } = require("nanoid");
 
 const app = express();
 const PORT = 3000;
 
+app.use(
+  cors({
+    origin: "http://localhost:5173",
+  })
+);
 app.use(express.json());
 
 app.use((req, res, next) => {
@@ -14,14 +20,46 @@ app.use((req, res, next) => {
   next();
 });
 
-const JWT_SECRET = "access_secret";
+// Секреты и время жизни для access- и refresh-токенов
+const ACCESS_SECRET = "access_secret";
+const REFRESH_SECRET = "refresh_secret";
 const ACCESS_EXPIRES_IN = "15m";
+const REFRESH_EXPIRES_IN = "7d";
 
 /** @type {{ id: string, email: string, first_name: string, last_name: string, passwordHash: string }[]} */
 const users = [];
 
 /** @type {{ id: string, title: string, category: string, description: string, price: number }[]} */
 const products = [];
+
+// Хранилище refresh-токенов в памяти
+const refreshTokens = new Set();
+
+function generateAccessToken(user) {
+  return jwt.sign(
+    {
+      sub: user.id,
+      email: user.email,
+    },
+    ACCESS_SECRET,
+    {
+      expiresIn: ACCESS_EXPIRES_IN,
+    }
+  );
+}
+
+function generateRefreshToken(user) {
+  return jwt.sign(
+    {
+      sub: user.id,
+      email: user.email,
+    },
+    REFRESH_SECRET,
+    {
+      expiresIn: REFRESH_EXPIRES_IN,
+    }
+  );
+}
 
 function authMiddleware(req, res, next) {
   const header = req.headers.authorization || "";
@@ -34,7 +72,7 @@ function authMiddleware(req, res, next) {
   }
 
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, ACCESS_SECRET);
     req.user = payload; // { sub, email, iat, exp }
     next();
   } catch (err) {
@@ -109,19 +147,13 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
-    const accessToken = jwt.sign(
-      {
-        sub: user.id,
-        email: user.email,
-      },
-      JWT_SECRET,
-      {
-        expiresIn: ACCESS_EXPIRES_IN,
-      }
-    );
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
+    refreshTokens.add(refreshToken);
 
     return res.json({
       accessToken,
+      refreshToken,
     });
   } catch (e) {
     console.error(e);
@@ -145,6 +177,51 @@ app.get("/api/auth/me", authMiddleware, (req, res) => {
     first_name: user.first_name,
     last_name: user.last_name,
   });
+});
+
+// Обновление пары токенов по refresh-токену из заголовка Authorization: Bearer <refreshToken>
+app.post("/api/auth/refresh", (req, res) => {
+  const header = req.headers.authorization || "";
+  const [scheme, token] = header.split(" ");
+
+  if (scheme !== "Bearer" || !token) {
+    return res.status(400).json({
+      error: "Refresh token is required in Authorization header as Bearer <token>",
+    });
+  }
+
+  const refreshToken = token;
+
+  if (!refreshTokens.has(refreshToken)) {
+    return res.status(401).json({
+      error: "Invalid refresh token",
+    });
+  }
+
+  try {
+    const payload = jwt.verify(refreshToken, REFRESH_SECRET);
+    const user = users.find((u) => u.id === payload.sub);
+    if (!user) {
+      return res.status(401).json({
+        error: "User not found",
+      });
+    }
+
+    // Ротация refresh-токена: старый удаляем, новый создаём
+    refreshTokens.delete(refreshToken);
+    const newAccessToken = generateAccessToken(user);
+    const newRefreshToken = generateRefreshToken(user);
+    refreshTokens.add(newRefreshToken);
+
+    return res.json({
+      accessToken: newAccessToken,
+      refreshToken: newRefreshToken,
+    });
+  } catch (err) {
+    return res.status(401).json({
+      error: "Invalid or expired refresh token",
+    });
+  }
 });
 
 app.post("/api/products", (req, res) => {
@@ -232,6 +309,7 @@ app.listen(PORT, () => {
   console.log(`Доступные маршруты:
   POST   /api/auth/register
   POST   /api/auth/login
+  POST   /api/auth/refresh
   GET    /api/auth/me        (JWT Bearer <token>)
   POST   /api/products
   GET    /api/products
