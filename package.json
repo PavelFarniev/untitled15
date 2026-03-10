@@ -1,0 +1,17 @@
+{
+  "name": "untitled15",
+  "version": "1.0.0",
+  "description": "Практические занятия 7-8: сервер Node.js с аутентификацией, JWT и CRUD для товаров",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "private": true,
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "nanoid": "^5.0.7"
+  }
+}
